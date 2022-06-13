@@ -11,6 +11,7 @@ struct Point<T> {
     x: T, y: T
 }
 
+
 fn write_image(filename: &str, pixels: &[u8], bounds: Point<usize>)
     -> Result<(), Error>
 {
@@ -47,7 +48,7 @@ fn render(pixels: &mut [u8],
 fn escape_time(c: Complex<f64>, limit: usize) -> Option<usize> {
     let mut z = Complex { re: 0.0, im: 0.0 };
     for i in 0..limit {
-        if z.norm_sqr() > 4.0 {
+        if z.norm_sqr() > 9.0 {
             return Some(i);
         }
         z = z * z + c;
@@ -97,6 +98,34 @@ fn test_parse_complex() {
     assert_eq!(parse_complex::<f32>("1,2"), Some(Complex {re: 1.0, im: 2.0}));
 }
 
+fn parallel_render(pixels: &mut [u8],
+                   bounds: Point<usize>,
+                   upper_left: Complex<f64>,
+                   lower_right: Complex<f64>)
+{
+    let threads = 8;
+    let rows_per_band = bounds.y / threads + 1;
+
+    let bands: Vec<&mut [u8]> =
+        pixels.chunks_mut(rows_per_band * bounds.x).collect();
+    crossbeam::scope(|spawner| {
+        for (i, band) in bands.into_iter().enumerate() {
+            let top = rows_per_band * i;
+            let height = band.len() / bounds.x;
+            let band_bounds = Point { x: bounds.x, y: height};
+            let band_upper_left =
+                pixel_to_point(bounds, Point{x: 0, y: top}, upper_left, lower_right);
+            let band_lower_right =
+                pixel_to_point(bounds, Point{x: bounds.x, y: top + height},
+                               upper_left, lower_right);
+
+            spawner.spawn(move |_| {
+                render(band, band_bounds, band_upper_left, band_lower_right);
+            });
+        }
+    }).unwrap();
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -114,7 +143,7 @@ fn main() {
 
     let mut pixels = vec![0; bounds.x * bounds.y];
 
-    render(&mut pixels, bounds, upper_left, lower_right);
+    parallel_render(&mut pixels, bounds, upper_left, lower_right);
 
     write_image(&args[1], &pixels, bounds)
         .expect("error writing PNG file");
