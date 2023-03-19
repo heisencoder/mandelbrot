@@ -1,165 +1,73 @@
-use image::ColorType;
-use image::png::PNGEncoder;
-use num::Complex;
-use std::fs::File;
-use std::io::Error;
-use std::str::FromStr;
-use std::env;
+// Question asked of ChatGPT:
+// write a rust program that generates a fractal 2D image where the coordinate of each pixel is on the complex plane and the color of the pixel indicates how many iterations of Newton's method is required to get to within distance 0.0000001 of one of the three complex roots of y = x**3 + 1, and each root uses a different color.
 
-#[derive(Copy, Clone)]
-struct Point<T> {
-    x: T, y: T
-}
+// Answer from ChatGPT:
+// Here's an example program that generates a fractal image using Newton's method on the complex plane:
 
+use image::{ImageBuffer, Rgb};
+use num_complex::Complex;
 
-fn write_image(filename: &str, pixels: &[u8], bounds: Point<usize>)
-    -> Result<(), Error>
-{
-    let output = File::create(filename)?;
-
-    let encoder = PNGEncoder::new(output);
-    encoder.encode(pixels,
-                    bounds.x as u32, bounds.y as u32,
-                    ColorType::Gray(8))?;
-    Ok(())
-}
-
-fn render(pixels: &mut [u8],
-          bounds: Point<usize>,
-          upper_left: Complex<f64>,
-          lower_right: Complex<f64>)
-{
-    assert!(pixels.len() == bounds.x * bounds.y);
-
-    for row in 0..bounds.y {
-        for column in 0..bounds.x {
-            let point = pixel_to_point(bounds, Point {x: column, y: row},
-                                       upper_left, lower_right);
-            pixels[row * bounds.x + column] =
-                match escape_time(point, 255) {
-                    None => 0,
-                    Some(count) => 255 - count as u8
-                };
+fn newton_iteration(c: Complex<f64>) -> (u8, Complex<f64>) {
+    let mut z = c;
+    let mut i = 255;
+    let order = 8;
+    while i > 0 {
+        let delta = (z.powi(order) - 1.0) / (order as f64 * z.powi(order - 1));
+        if delta.norm() < 1e-7 {
+            break;
         }
+        z = z - delta;
+        i = i - 1;
+        // i = if i > 32 { i - 4 } else { i - 1 };
     }
-}
-
-
-fn escape_time(c: Complex<f64>, limit: usize) -> Option<usize> {
-    let mut z = Complex { re: 0.0, im: 0.0 };
-    for i in 0..limit {
-        if z.norm_sqr() > 9.0 {
-            return Some(i);
-        }
-        z = z * z + c;
-    }
-    None
-}
-
-#[test]
-fn test_escape_time() {
-    assert_eq!(escape_time(Complex {re: 0.0, im: 0.0}, 255), None); 
-    assert_eq!(escape_time(Complex {re: 0.0, im: 2.0}, 255), Some(2)); 
-}
-
-fn pixel_to_point(bounds: Point<usize>,
-                  pixel: Point<usize>,
-                  upper_left: Complex<f64>,
-                  lower_right: Complex<f64>)
-    -> Complex<f64>
-{
-    let (width, height) = (lower_right.re - upper_left.re,
-                           upper_left.im - lower_right.im);
-    Complex {
-        re: upper_left.re + pixel.x as f64 * width / bounds.x as f64,
-        im: upper_left.im - pixel.y as f64 * height / bounds.y as f64
-    }
-}
-
-fn parse_pair<T: FromStr>(s: &str, separator: char) -> Option<(T, T)> {
-    match s.find(separator) {
-        None => None,
-        Some(index) => (
-            match (T::from_str(&s[..index]), T::from_str(&s[index + 1..])) {
-                (Ok(l), Ok(r)) => Some((l, r)),
-                _ => None
-            }
-        )
-    } 
-} 
-
-fn parse_complex<T: FromStr>(num: &str) -> Option<Complex<T>> {
-    parse_pair::<T>(num, ',').map(|(re, im)| Complex { re, im })
-}
-
-#[test]
-fn test_parse_complex() {
-    assert_eq!(parse_complex::<usize>("1,2"), Some(Complex {re: 1, im: 2}));
-    assert_eq!(parse_complex::<f32>("1,2"), Some(Complex {re: 1.0, im: 2.0}));
-}
-
-fn parallel_render(pixels: &mut [u8],
-                   bounds: Point<usize>,
-                   upper_left: Complex<f64>,
-                   lower_right: Complex<f64>)
-{
-    let threads = 8;
-    let rows_per_band = bounds.y / threads + 1;
-
-    let bands: Vec<&mut [u8]> =
-        pixels.chunks_mut(rows_per_band * bounds.x).collect();
-    crossbeam::scope(|spawner| {
-        for (i, band) in bands.into_iter().enumerate() {
-            let top = rows_per_band * i;
-            let height = band.len() / bounds.x;
-            let band_bounds = Point { x: bounds.x, y: height};
-            let band_upper_left =
-                pixel_to_point(bounds, Point{x: 0, y: top}, upper_left, lower_right);
-            let band_lower_right =
-                pixel_to_point(bounds, Point{x: bounds.x, y: top + height},
-                               upper_left, lower_right);
-
-            spawner.spawn(move |_| {
-                render(band, band_bounds, band_upper_left, band_lower_right);
-            });
-        }
-    }).unwrap();
+    (i, z)
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let _roots = vec![
+        Complex { re: -1.0, im: 0.0 },
+        Complex { re: 0.5, im: 0.5 * 3.0f64.sqrt() },
+        Complex { re: 0.5, im: -0.5 * 3.0f64.sqrt() },
+    ];
+    let (width, height) = (1920*8, 1080*8);
+    let mut img = ImageBuffer::new(width, height);
 
-    if args.len() != 5 {
-        eprintln!("Usage: {} file pixels upperleft lowerright", args[0]);
-        std::process::exit(1);
+    let zoom: f64 = 0.2;
+    for (x, y, pixel) in img.enumerate_pixels_mut() {
+        let c = Complex {
+            re: zoom * (16.0 * (x as f64) / (width as f64) - 8.0),
+            im: zoom * (9.0 * (y as f64) / (height as f64) - 4.5),
+        };
+        let (i, z) = newton_iteration(c);
+        *pixel = if i == 0 {
+            Rgb::<u8>([0,0,0])
+        } else { 
+            match (sign(z.re), sign(z.im)) {
+                (1, 1) => Rgb::<u8>([i, 0, 0]), // Red
+                (1, 0) => Rgb::<u8>([i, i/2, 0]),
+                (1, -1) => Rgb::<u8>([i, i, 0]), // yellow
+                (0, -1) => Rgb::<u8>([0, i, 0]), // green
+                (-1, -1) => Rgb::<u8>([0, i, i/3*2]),
+                (-1, 0) => Rgb::<u8>([0, i/3*2, i]),
+                (-1, 1) => Rgb::<u8>([i/4, i/4, i]), // blue
+                (0, 1) => Rgb::<u8>([i, 0, i]),
+                (_, _) => Rgb::<u8>([0, 0, 0]),
+            }
+        }
     }
 
-    let bounds = parse_pair(&args[2], 'x').map(|(x,y)| Point {x,y})
-        .expect("error parsing image dimensions");
-    let upper_left = parse_complex(&args[3])
-        .expect("error parsing upper left");
-    let lower_right = parse_complex(&args[4])
-        .expect("error parsing lower right");
-
-    let mut pixels = vec![0; bounds.x * bounds.y];
-
-    parallel_render(&mut pixels, bounds, upper_left, lower_right);
-
-    write_image(&args[1], &pixels, bounds)
-        .expect("error writing PNG file");
-
+    img.save("fractal.png").unwrap();
 }
 
-#[test]
-fn test_parse_pair() {
-    assert_eq!(parse_pair::<i32>("", ','), None);
-    assert_eq!(parse_pair::<i32>("10,20", ','), Some((10,20)));
+fn sign(x: f64) -> isize {
+    if x > 1e-7 { 1 } else if x < -1e-7 { -1 } else { 0 }
 }
 
-#[test]
-fn test_pixel_to_point() {
-    assert_eq!(pixel_to_point(Point {x: 100, y: 200}, Point {x: 25, y: 175},
-                              Complex { re: -1.0, im:  1.0 },
-                              Complex { re:  1.0, im: -1.0 }),
-               Complex { re: -0.5, im: -0.75 });
-}
+
+// This program uses the image crate to save the fractal image as a PNG file. It also uses the num-complex crate to represent complex numbers. You can install these crates by adding the following dependencies to your Cargo.toml file:
+
+// [dependencies]
+// image = "0.23.5"
+// num-complex = "0.3.0"
+  
+// Please note that the above code is just one way to implement the fractal, different parameter values and different calculations can lead to different images.
